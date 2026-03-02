@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "ChatGPT Bulk Chat Mover",
+  "name": "ChatGPT Chats Management Tool 1.0",
   "version": "1.0",
   "description": "Add checkboxes to ChatGPT sidebar chats and bulk-move them to any Project.",
   "permissions": [
@@ -23,6 +23,6 @@
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "ChatGPT Bulk Chat Mover"
+    "default_title": "ChatGPT Chats Management Tool 1.0"
   }
 }
