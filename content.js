@@ -60,6 +60,7 @@
       '#bcm3-panel button:hover { transform:translateY(-1px); }',
       '#bcm3-panel button:active { transform:translateY(0); }',
       '#bcm3-move-btn { background:#fafafa; color:#111111; border-color:#fafafa; box-shadow:0 1px 0 rgba(255,255,255,.35) inset; }',
+      '#bcm3-delete-btn { background:#2a1111; color:#fca5a5; border-color:#5f2020; }',
       '#bcm3-refresh-btn, #bcm3-selall-btn { background:#171717; color:#f5f5f5; }',
       '#bcm3-close-btn { background:transparent; color:#a3a3a3; }',
       '#bcm3-status { margin-top:8px; font-size:11px; min-height:16px; color:#d4d4d4; word-break:break-word; line-height:1.4; }'
@@ -94,7 +95,7 @@
     var el = document.getElementById('bcm3-count');
     if (el) el.textContent = checked + ' of ' + all + ' chats selected';
   }
-  var BCM3_QUEUE_KEY = 'bcm3-move-queue-v1';
+  var BCM3_QUEUE_KEY = 'bcm3-task-queue-v1';
   var bcm3QueueRunning = false;
   function readMoveQueue() {
     try {
@@ -119,7 +120,7 @@
       return convIdFromHref(a.getAttribute('href') || a.href) === convId;
     }) || null;
   }
-  function enqueueCurrentSelection(projectId, projectName) {
+  function enqueueCurrentSelection(action, projectId, projectName) {
     var items = Array.from(document.querySelectorAll('.bcm3-cb:checked')).map(function(cb) {
       return {
         convId: cb.dataset.convId,
@@ -127,6 +128,7 @@
       };
     }).filter(function(x) { return !!x.convId; });
     var queue = {
+      action: action || 'move',
       projectId: projectId,
       projectName: projectName,
       items: items,
@@ -145,6 +147,24 @@
       return r.width > 0 && r.height > 0;
     });
   }
+  function getVisibleButtons() {
+    return Array.from(document.querySelectorAll('button')).filter(function(el) {
+      var style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      var r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    });
+  }
+  function isVisibleElement(el) {
+    if (!el) return false;
+    var style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    var r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
+  function normalizeText(s) {
+    return (s || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  }
   function findMenuButtonForChatLink(link) {
     if (!link) return null;
     var row = link.closest('li') || link.parentElement;
@@ -162,7 +182,9 @@
     bcm3QueueRunning = true;
     try {
       var total = queue.items.length;
-      setStatus('Resuming queue: ' + (queue.index + 1) + '/' + total);
+      var action = queue.action || 'move';
+      var actionWord = action === 'delete' ? 'Delete' : 'Move';
+      setStatus('Resuming ' + actionWord.toLowerCase() + ' queue: ' + (queue.index + 1) + '/' + total);
       while (queue.index < total) {
         var item = queue.items[queue.index];
         var title = item.title || item.convId || '';
@@ -189,46 +211,86 @@
           writeMoveQueue(queue);
           continue;
         }
-        setStatus('[' + (queue.index + 1) + '/' + total + '] Moving "' + title + '"...');
+        setStatus('[' + (queue.index + 1) + '/' + total + '] ' + actionWord + ' "' + title + '"...');
         realClick(btn);
         await delay(500);
-        var moveItem = null;
-        for (var w = 0; w < 20; w++) {
-          var items = getVisibleMenuItems();
-          moveItem = items.find(function(el) {
-            return el.textContent.trim().indexOf('Move to project') === 0;
-          });
-          if (moveItem) break;
-          await delay(150);
+        if (action === 'move') {
+          var moveItem = null;
+          for (var w = 0; w < 20; w++) {
+            var items = getVisibleMenuItems();
+            moveItem = items.find(function(el) {
+              return normalizeText(el.textContent).indexOf('move to project') === 0;
+            });
+            if (moveItem) break;
+            await delay(150);
+          }
+          if (!moveItem) {
+            setStatus('[' + (queue.index + 1) + '] "Move to project" not found');
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+            await delay(240);
+            queue.index++;
+            writeMoveQueue(queue);
+            continue;
+          }
+          realHover(moveItem);
+          realClick(moveItem);
+          await delay(520);
+          var projItem = null;
+          var pName = normalizeText(queue.projectName || '');
+          for (var w2 = 0; w2 < 18; w2++) {
+            var pitems = getVisibleMenuItems();
+            projItem = pitems.find(function(el) { return normalizeText(el.textContent) === pName; });
+            if (projItem) break;
+            await delay(150);
+          }
+          if (!projItem) {
+            setStatus('[' + (queue.index + 1) + '] Project "' + queue.projectName + '" not in submenu');
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+            await delay(240);
+            queue.index++;
+            writeMoveQueue(queue);
+            continue;
+          }
+          realClick(projItem);
+        } else if (action === 'delete') {
+          var deleteItem = null;
+          for (var wd = 0; wd < 20; wd++) {
+            var ditems = getVisibleMenuItems();
+            deleteItem = ditems.find(function(el) {
+              var txt = normalizeText(el.textContent);
+              return txt === 'delete' || txt.indexOf('delete ') === 0;
+            });
+            if (deleteItem) break;
+            await delay(150);
+          }
+          if (!deleteItem) {
+            setStatus('[' + (queue.index + 1) + '] "Delete" not found in menu');
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+            await delay(240);
+            queue.index++;
+            writeMoveQueue(queue);
+            continue;
+          }
+          realHover(deleteItem);
+          realClick(deleteItem);
+          await delay(520);
+          var confirmDelete = null;
+          for (var wc = 0; wc < 20; wc++) {
+            var exactConfirm = document.querySelector('button[data-testid="delete-conversation-confirm-button"]');
+            if (isVisibleElement(exactConfirm)) {
+              confirmDelete = exactConfirm;
+              break;
+            }
+            var btns = getVisibleButtons();
+            confirmDelete = btns.find(function(el) {
+              var txt = normalizeText(el.textContent);
+              return txt === 'delete' || txt === 'delete chat' || txt === 'delete conversation';
+            });
+            if (confirmDelete) break;
+            await delay(120);
+          }
+          if (confirmDelete) realClick(confirmDelete);
         }
-        if (!moveItem) {
-          setStatus('[' + (queue.index + 1) + '] "Move to project" not found');
-          document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-          await delay(240);
-          queue.index++;
-          writeMoveQueue(queue);
-          continue;
-        }
-        realHover(moveItem);
-        realClick(moveItem);
-        await delay(520);
-        var projItem = null;
-        var pName = (queue.projectName || '').toLowerCase();
-        for (var w2 = 0; w2 < 18; w2++) {
-          var pitems = getVisibleMenuItems();
-          projItem = pitems.find(function(el) { return el.textContent.trim().toLowerCase() === pName; });
-          if (projItem) break;
-          await delay(150);
-        }
-        if (!projItem) {
-          setStatus('[' + (queue.index + 1) + '] Project "' + queue.projectName + '" not in submenu');
-          document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-          await delay(240);
-          queue.index++;
-          writeMoveQueue(queue);
-          continue;
-        }
-        realClick(projItem);
         queue.moved++;
         queue.index++;
         writeMoveQueue(queue);
@@ -237,7 +299,11 @@
         updateCount();
         await delay(950);
       }
-      setStatus('Done! Moved ' + queue.moved + '/' + total + ' to "' + queue.projectName + '"');
+      if (action === 'delete') {
+        setStatus('Done! Deleted ' + queue.moved + '/' + total + ' chats');
+      } else {
+        setStatus('Done! Moved ' + queue.moved + '/' + total + ' to "' + queue.projectName + '"');
+      }
       clearMoveQueue();
       setTimeout(function() { location.reload(); }, 1200);
     } finally {
@@ -309,16 +375,22 @@
     });
     updateCount();
   }
-  async function moveSelected() {
+  async function startSelectedAction(action) {
     var sel = document.getElementById('bcm3-project-sel');
     var projectId = sel && sel.value;
     var projectName = sel && sel.options[sel.selectedIndex] && sel.options[sel.selectedIndex].text || '';
-    if (!projectId) { setStatus('No project selected'); return; }
-    var queue = enqueueCurrentSelection(projectId, projectName);
+    if (action === 'move' && !projectId) { setStatus('No project selected'); return; }
+    var queue = enqueueCurrentSelection(action, projectId, projectName);
     if (!queue.items.length) { setStatus('No chats selected'); clearMoveQueue(); return; }
-    setStatus('Starting: ' + queue.items.length + ' chats to "' + projectName + '"');
+    if (action === 'delete') {
+      setStatus('Starting: ' + queue.items.length + ' chats to delete');
+    } else {
+      setStatus('Starting: ' + queue.items.length + ' chats to "' + projectName + '"');
+    }
     await processMoveQueue();
   }
+  async function moveSelected() { await startSelectedAction('move'); }
+  async function deleteSelected() { await startSelectedAction('delete'); }
   function init() {
     if (document.getElementById('bcm3-panel')) return;
     injectStyle();
@@ -335,6 +407,7 @@
       '<button id="bcm3-refresh-btn"><svg class="bcm3-btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 2v6h-6"></path><path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path><path d="M3 22v-6h6"></path><path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg>Refresh Projects</button>' +
       '<button id="bcm3-selall-btn"><svg class="bcm3-btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 11 3 3L22 4"></path><path d="m21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>Select / Deselect All</button>' +
       '<button id="bcm3-move-btn"><svg class="bcm3-btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 14 3-3 3 3"></path><path d="M12 11v9"></path><path d="M2 10V5a2 2 0 0 1 2-2h3l2 3h11a2 2 0 0 1 2 2v2"></path></svg>Move Selected to Project</button>' +
+      '<button id="bcm3-delete-btn"><svg class="bcm3-btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M19 6l-1 14H6L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path></svg>Delete</button>' +
       '<button id="bcm3-close-btn"><svg class="bcm3-btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>Close</button>' +
       '<div id="bcm3-status">Ready</div>';
     document.body.appendChild(panel);
@@ -349,6 +422,7 @@
       loadProjects();
     });
     document.getElementById('bcm3-move-btn').addEventListener('click', moveSelected);
+    document.getElementById('bcm3-delete-btn').addEventListener('click', deleteSelected);
     document.getElementById('bcm3-close-btn').addEventListener('click', function() {
       panel.remove();
       lastClickedCheckbox = null;
