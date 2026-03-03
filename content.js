@@ -515,6 +515,60 @@
     updateCount();
   }
   var lastProjectCount = 0;
+  // Claude.ai: fetch projects via the internal REST API.
+  // Finds the org UUID from network requests already made by the page
+  // (performance API), then calls /api/organizations/{uuid}/projects.
+  async function fetchProjectsFromClaudeAPI() {
+    try {
+      var orgId = null;
+      // Method 1: extract org UUID from URLs Claude.ai has already fetched.
+      // By the time init() runs (2 s after load), the page has definitely
+      // made API calls whose URLs contain the UUID.
+      try {
+        var entries = performance.getEntriesByType('resource');
+        for (var ei = 0; ei < entries.length; ei++) {
+          var em = entries[ei].name.match(/\/api\/organizations\/([0-9a-f-]{36})/i);
+          if (em) { orgId = em[1]; break; }
+        }
+      } catch(e) {}
+      // Method 2: try __remixContext if the performance scan came up empty.
+      if (!orgId) {
+        try {
+          var ctx = window.__remixContext;
+          if (ctx) {
+            var json = JSON.stringify(ctx.state || ctx);
+            var rm = json.match(/["\s]uuid["']?\s*:\s*["']([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})["']/i);
+            if (rm) orgId = rm[1];
+          }
+        } catch(e) {}
+      }
+      // Method 3: ask /api/organizations directly.
+      if (!orgId) {
+        try {
+          var r = await fetch('/api/organizations', { credentials: 'include' });
+          if (r.ok) {
+            var orgs = await r.json();
+            var orgList = Array.isArray(orgs) ? orgs : (orgs.organizations || []);
+            if (orgList.length) orgId = orgList[0].uuid || orgList[0].id;
+          }
+        } catch(e) {}
+      }
+      if (!orgId) return [];
+      var resp = await fetch('/api/organizations/' + orgId + '/projects?limit=100', {
+        credentials: 'include'
+      });
+      if (!resp.ok) return [];
+      var data = await resp.json();
+      var projectList = Array.isArray(data) ? data : (data.projects || []);
+      return projectList.map(function(p) {
+        var name = p.name || p.project_name || p.title || '';
+        var id = p.uuid || p.id || name;
+        return { id: id, name: name };
+      }).filter(function(p) { return p.id && p.name; });
+    } catch(e) {
+      return [];
+    }
+  }
   // Claude.ai: project links don't live in the sidebar DOM by default.
   // Instead, temporarily open the "Add/Change project" modal on the first
   // available chat, read the [role="option"] project names, then close it.
@@ -570,8 +624,11 @@
     if (!sel) return;
     // Fast DOM scan first
     var projects = fetchAllProjects();
-    // On Claude.ai, fall back to modal scraping when the user explicitly
-    // requests a refresh (forceModal) and the DOM scan came up empty.
+    // On Claude.ai, try the internal API next (silent, no UI changes).
+    if (!projects.length && SITE.site === 'claude') {
+      projects = await fetchProjectsFromClaudeAPI();
+    }
+    // Last resort: open the project picker modal (only on explicit Refresh).
     if (!projects.length && SITE.site === 'claude' && forceModal) {
       setStatus('Opening project picker to load list...');
       projects = await fetchProjectsViaClaudeModal();
@@ -700,7 +757,9 @@
       }
     });
     window._bcmProjectObserver.observe(document.body, { childList: true, subtree: true });
-    loadProjects();
+    // On Claude.ai pass forceModal=true so the modal fallback fires
+    // automatically on first open if the DOM scan and API both come up empty.
+    loadProjects(SITE.site === 'claude');
     // Resume any pending queue on page load (the core of the reload-per-delete flow)
     setTimeout(processMoveQueue, 2000);
   }
