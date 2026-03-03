@@ -1,7 +1,55 @@
 (function () {
   'use strict';
+
+  // ---------------------------------------------------------------------------
+  // Site detection — returns config for ChatGPT or Claude.ai
+  // ---------------------------------------------------------------------------
+  function getSiteConfig() {
+    var host = window.location.hostname;
+    if (host.indexOf('claude.ai') !== -1) {
+      return {
+        site: 'claude',
+        chatLinkSelector: 'nav a[href*="/chat/"]',
+        chatHrefPattern: /\/chat\/([^?#/]+)/,
+        projectLinkSelector: 'a[href*="/project/"]',
+        projectHrefPattern: /\/project\/([^?#/]+)/,
+        moveMenuItemTexts: ['add to project', 'change project'],
+        deleteMenuItemText: 'delete',
+        panelTitle: 'Claude Chat Organizer',
+        panelSubtitle: 'Move selected chats into a project in one pass.'
+      };
+    }
+    return {
+      site: 'chatgpt',
+      chatLinkSelector: 'nav a[href^="/c/"]',
+      chatHrefPattern: /\/c\/([^?#/]+)/,
+      projectLinkSelector: 'a[href*="/g/g-p-"]',
+      projectHrefPattern: /\/g\/(g-p-[^/?#]+)/,
+      moveMenuItemTexts: ['move to project'],
+      deleteMenuItemText: 'delete',
+      panelTitle: 'ChatGPT Chat Organizer',
+      panelSubtitle: 'Move selected chats into a project in one pass.'
+    };
+  }
+  var SITE = getSiteConfig();
+
+  // ---------------------------------------------------------------------------
   function fetchAllProjects() {
     var projects = [];
+    // Claude.ai: read project links directly from the sidebar DOM
+    if (SITE.site === 'claude') {
+      var domLinks = Array.from(document.querySelectorAll(SITE.projectLinkSelector));
+      domLinks.forEach(function(a) {
+        var m = a.href.match(SITE.projectHrefPattern);
+        if (!m) return;
+        var id = m[1];
+        var name = a.textContent.trim();
+        if (name && id && !projects.find(function(x) { return x.id === id; }))
+          projects.push({ id: id, name: name });
+      });
+      return projects;
+    }
+    // ChatGPT: read from localStorage + DOM links
     try {
       for (var i = 0; i < localStorage.length; i++) {
         var key = localStorage.key(i);
@@ -108,12 +156,12 @@
     try { sessionStorage.removeItem(BCM3_QUEUE_KEY); } catch (e) {}
   }
   function convIdFromHref(href) {
-    var m = (href || '').match(/[/]c[/]([^?#/]+)/);
+    var m = (href || '').match(SITE.chatHrefPattern);
     return m && m[1] || '';
   }
   function findChatLinkByConvId(convId) {
     if (!convId) return null;
-    var links = Array.from(document.querySelectorAll('nav a[href*="/c/"]'));
+    var links = Array.from(document.querySelectorAll(SITE.chatLinkSelector));
     return links.find(function(a) {
       return convIdFromHref(a.getAttribute('href') || a.href) === convId;
     }) || null;
@@ -157,7 +205,15 @@
   }
   function findMenuButtonForChatLink(link) {
     if (!link) return null;
-    // Primary: button is inside the <a> tag itself
+    var row = link.closest('li') || link.parentElement;
+    if (!row) return null;
+    // Claude.ai: options button uses aria-label="More options for {title}"
+    if (SITE.site === 'claude') {
+      return row.querySelector('button[aria-label*="More options"]')
+        || row.querySelector('button[aria-label*="options" i]')
+        || row.querySelector('button');
+    }
+    // ChatGPT: Primary: button is inside the <a> tag itself
     var btn = link.querySelector('button.__menu-item-trailing-btn')
       || link.querySelector('button[aria-haspopup="menu"]');
     if (btn) return btn;
@@ -168,9 +224,6 @@
         || wrap.querySelector('button[aria-haspopup="menu"]');
       if (btn) return btn;
     }
-    // Fallback: original row-based search
-    var row = link.closest('li') || link.parentElement;
-    if (!row) return null;
     return row.querySelector('button.__menu-item-trailing-btn')
       || row.querySelector('button[aria-haspopup="menu"]')
       || row.querySelector('button[aria-label*="options" i]')
@@ -214,7 +267,7 @@
       var elapsed = 0;
       var interval = 500;
       function check() {
-        if (document.querySelectorAll('nav a[href^="/c/"]').length > 0) {
+        if (document.querySelectorAll(SITE.chatLinkSelector).length > 0) {
           resolve(true);
           return;
         }
@@ -299,48 +352,71 @@
       if (action === 'move') {
         realClick(btn);
         await delay(700);
+        // Find the move/add-to-project menu item (text differs per site)
         var moveItem = null;
         for (var w = 0; w < 25; w++) {
           var mitems = getVisibleMenuItems();
           moveItem = mitems.find(function(el) {
-            return normalizeText(el.textContent).indexOf('move to project') === 0;
+            var t = normalizeText(el.textContent);
+            return SITE.moveMenuItemTexts.some(function(s) { return t.indexOf(s) === 0; });
           });
           if (moveItem) break;
           await delay(150);
         }
         if (!moveItem) {
-          setStatus('[' + (queue.index + 1) + '] "Move to project" not found');
+          setStatus('[' + (queue.index + 1) + '] "Move to project" option not found');
           dismissOpenMenus();
           await delay(300);
           queue.index++;
           writeMoveQueue(queue);
-          // For move, continue in same pass
           bcm3QueueRunning = false;
           await processMoveQueue();
           return;
         }
         realHover(moveItem);
         realClick(moveItem);
-        await delay(520);
+        await delay(600);
         var projItem = null;
         var pName = normalizeText(queue.projectName || '');
-        for (var w2 = 0; w2 < 18; w2++) {
-          var pitems = getVisibleMenuItems();
-          projItem = pitems.find(function(el) { return normalizeText(el.textContent) === pName; });
-          if (projItem) break;
-          await delay(150);
+        if (SITE.site === 'claude') {
+          // Claude.ai opens a modal with [role="option"] items instead of a submenu
+          for (var wm = 0; wm < 20; wm++) {
+            var opts = Array.from(document.querySelectorAll('[role="option"]')).filter(isVisibleElement);
+            projItem = opts.find(function(el) { return normalizeText(el.textContent) === pName; });
+            if (projItem) break;
+            await delay(150);
+          }
+          if (!projItem) {
+            setStatus('[' + (queue.index + 1) + '] Project "' + queue.projectName + '" not in modal');
+            dismissOpenMenus();
+            await delay(300);
+            queue.index++;
+            writeMoveQueue(queue);
+            bcm3QueueRunning = false;
+            await processMoveQueue();
+            return;
+          }
+          realClick(projItem);
+        } else {
+          // ChatGPT: project appears as a submenu item
+          for (var w2 = 0; w2 < 18; w2++) {
+            var pitems = getVisibleMenuItems();
+            projItem = pitems.find(function(el) { return normalizeText(el.textContent) === pName; });
+            if (projItem) break;
+            await delay(150);
+          }
+          if (!projItem) {
+            setStatus('[' + (queue.index + 1) + '] Project "' + queue.projectName + '" not in submenu');
+            dismissOpenMenus();
+            await delay(300);
+            queue.index++;
+            writeMoveQueue(queue);
+            bcm3QueueRunning = false;
+            await processMoveQueue();
+            return;
+          }
+          realClick(projItem);
         }
-        if (!projItem) {
-          setStatus('[' + (queue.index + 1) + '] Project "' + queue.projectName + '" not in submenu');
-          dismissOpenMenus();
-          await delay(300);
-          queue.index++;
-          writeMoveQueue(queue);
-          bcm3QueueRunning = false;
-          await processMoveQueue();
-          return;
-        }
-        realClick(projItem);
         queue.moved++;
         queue.index++;
         writeMoveQueue(queue);
@@ -461,10 +537,10 @@
     setStatus('Loaded ' + projects.length + ' projects');
   }
   function injectCheckboxes() {
-    var links = document.querySelectorAll('nav a[href^="/c/"]');
+    var links = document.querySelectorAll(SITE.chatLinkSelector);
     links.forEach(function(link) {
       if (link.parentElement && link.parentElement.classList.contains('bcm3-wrap')) return;
-      var match = link.href.match(/[/]c[/]([^?#]+)/);
+      var match = link.href.match(SITE.chatHrefPattern);
       var convId = match && match[1];
       if (!convId) return;
       var wrap = document.createElement('div');
@@ -509,8 +585,8 @@
     panel.innerHTML =
       '<div id="bcm3-head">' +
       '<div id="bcm3-kicker">Extension</div>' +
-      '<h3>ChatGPT Chat Organizer</h3>' +
-      '<p id="bcm3-sub">Move selected chats into a project in one pass.</p>' +
+      '<h3>' + SITE.panelTitle + '</h3>' +
+      '<p id="bcm3-sub">' + SITE.panelSubtitle + '</p>' +
       '</div>' +
       '<div id="bcm3-count">Loading...</div>' +
       '<select id="bcm3-project-sel"><option>Loading...</option></select>' +
@@ -554,9 +630,9 @@
     window._bcmObserver.observe(document.querySelector('nav') || document.body, { childList: true, subtree: true });
     injectCheckboxes();
     var projectTimer = null;
-    var knownProjectCount = document.querySelectorAll('a[href*="/g/g-p-"]').length;
+    var knownProjectCount = document.querySelectorAll(SITE.projectLinkSelector).length;
     window._bcmProjectObserver = new MutationObserver(function() {
-      var currentCount = document.querySelectorAll('a[href*="/g/g-p-"]').length;
+      var currentCount = document.querySelectorAll(SITE.projectLinkSelector).length;
       if (currentCount !== knownProjectCount) {
         knownProjectCount = currentCount;
         clearTimeout(projectTimer);
