@@ -2,6 +2,21 @@
 const toggleBtn = document.getElementById('toggleBtn');
 const statusEl = document.getElementById('status');
 const toggleLabel = document.getElementById('toggleLabel');
+const popupTitle = document.getElementById('popupTitle');
+const popupDesc = document.getElementById('popupDesc');
+
+const SITE_INFO = {
+  chatgpt: {
+    match: url => url.includes('chatgpt.com'),
+    title: 'ChatGPT Chat Organizer',
+    desc: 'Select multiple chats in ChatGPT and move them into a Project with one clean workflow.',
+  },
+  claude: {
+    match: url => url.includes('claude.ai'),
+    title: 'Claude Chat Organizer',
+    desc: 'Select multiple chats in Claude and move them into a Project with one clean workflow.',
+  },
+};
 
 function setStatus(text, type = '') {
   statusEl.textContent = text;
@@ -13,10 +28,20 @@ function setToggleUI(isOn) {
   toggleLabel.textContent = isOn ? 'On' : 'Off';
 }
 
-async function getActiveChatGPTTab() {
+function detectSite(url) {
+  if (!url) return null;
+  for (const [key, info] of Object.entries(SITE_INFO)) {
+    if (info.match(url)) return key;
+  }
+  return null;
+}
+
+async function getActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab || !tab.url || !tab.url.includes('chatgpt.com')) return null;
-  return tab;
+  if (!tab || !tab.url) return null;
+  const site = detectSite(tab.url);
+  if (!site) return null;
+  return { tab, site };
 }
 
 async function readCurrentPanelState(tabId) {
@@ -34,12 +59,18 @@ async function readCurrentPanelState(tabId) {
 
 async function initToggleState() {
   try {
-    const tab = await getActiveChatGPTTab();
-    if (!tab) {
+    const active = await getActiveTab();
+    if (!active) {
       setToggleUI(false);
-      setStatus('Open chatgpt.com to use the toggle.', 'error');
+      setStatus('Open chatgpt.com or claude.ai to use the toggle.', 'error');
       return;
     }
+    const { tab, site } = active;
+    // Update popup branding to match the active site
+    const info = SITE_INFO[site];
+    popupTitle.textContent = info.title;
+    popupDesc.textContent = info.desc;
+
     const isOn = await readCurrentPanelState(tab.id);
     setToggleUI(isOn);
     setStatus(isOn ? 'Panel is currently on.' : 'Panel is currently off.');
@@ -52,11 +83,12 @@ toggleBtn.addEventListener('click', async () => {
   toggleBtn.disabled = true;
   setStatus('Checking current tab...');
   try {
-    const tab = await getActiveChatGPTTab();
-    if (!tab) {
-      setStatus('Open chatgpt.com and try again.', 'error');
+    const active = await getActiveTab();
+    if (!active) {
+      setStatus('Open chatgpt.com or claude.ai and try again.', 'error');
       return;
     }
+    const { tab } = active;
     const [result] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: () => {

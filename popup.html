@@ -146,8 +146,8 @@
 <body>
   <div class="card">
     <div class="badge">Extension</div>
-    <h2>ChatGPT Chat Organizer</h2>
-    <p>Select multiple chats in ChatGPT and move them into a Project with one clean workflow.</p>
+    <h2 id="popupTitle">Chat Organizer</h2>
+    <p id="popupDesc">Select multiple chats and move them into a Project with one clean workflow.</p>
     <button id="toggleBtn" class="toggle-btn" aria-pressed="false">
       <span class="toggle-left">
         <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -162,7 +162,7 @@
       <span id="toggleLabel" class="toggle-label">Off</span>
     </button>
     <div id="status"></div>
-    <div class="hint">Works only on <code>chatgpt.com</code></div>
+    <div class="hint" id="popupHint">Works on <code>chatgpt.com</code> and <code>claude.ai</code></div>
   </div>
   <script src="popup.js"></script>
 </body>
