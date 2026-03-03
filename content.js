@@ -509,7 +509,7 @@
     panel.innerHTML =
       '<div id="bcm3-head">' +
       '<div id="bcm3-kicker">Extension</div>' +
-      '<h3>Bulk Chat Mover</h3>' +
+      '<h3>ChatGPT Chat Organizer</h3>' +
       '<p id="bcm3-sub">Move selected chats into a project in one pass.</p>' +
       '</div>' +
       '<div id="bcm3-count">Loading...</div>' +

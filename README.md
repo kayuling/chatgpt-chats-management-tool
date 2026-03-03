@@ -1,6 +1,6 @@
-# ChatGPT Chats Management Tool 1.0
+# ChatGPT Chat Organizer
 
-ChatGPT Chats Management Tool 1.0 is a Chrome MV3 extension for bulk-managing chats on `chatgpt.com` from the ChatGPT sidebar. It adds a control panel that helps you select multiple chats, then run queued move or delete workflows with status feedback and automatic recovery behavior.
+ChatGPT Chat Organizer is a Chrome MV3 extension for bulk-managing chats on `chatgpt.com` from the ChatGPT sidebar. It adds a control panel that helps you select multiple chats, then run queued move or delete workflows with status feedback and automatic recovery behavior.
 
 ## What This Extension Does
 
