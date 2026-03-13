@@ -48,10 +48,8 @@ async function readCurrentPanelState(tabId) {
   const [result] = await chrome.scripting.executeScript({
     target: { tabId },
     func: () => {
-      const panel = document.getElementById('bcm3-panel');
-      if (!panel) return false;
-      const style = window.getComputedStyle(panel);
-      return panel.style.display !== 'none' && style.display !== 'none' && style.visibility !== 'hidden';
+      // Safely check if the panel is currently active in the DOM
+      return window._bcmIsActive ? window._bcmIsActive() : false;
     }
   });
   return Boolean(result && result.result);
@@ -92,13 +90,12 @@ toggleBtn.addEventListener('click', async () => {
     const [result] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: () => {
-        const panel = document.getElementById('bcm3-panel');
-        if (panel) {
-          panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
-          return panel.style.display !== 'none';
+        if (window._bcmIsActive && window._bcmIsActive()) {
+          window._bcmTeardown && window._bcmTeardown();
+          return false; // Panel is now off
         } else {
           window._bcmInit && window._bcmInit();
-          return true;
+          return true; // Panel is now on
         }
       }
     });
