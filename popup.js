@@ -1,4 +1,3 @@
-
 const toggleBtn = document.getElementById('toggleBtn');
 const statusEl = document.getElementById('status');
 const toggleLabel = document.getElementById('toggleLabel');
@@ -36,6 +35,10 @@ function detectSite(url) {
   return null;
 }
 
+function enabledKeyForSite(site) {
+  return `bcm3-enabled:${site}`;
+}
+
 async function getActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab || !tab.url) return null;
@@ -44,17 +47,25 @@ async function getActiveTab() {
   return { tab, site };
 }
 
-async function readCurrentPanelState(tabId) {
+async function readStoredEnabled(site) {
+  const key = enabledKeyForSite(site);
+  const data = await chrome.storage.local.get(key);
+  return Boolean(data[key]);
+}
+
+async function getInjectedState(tabId) {
   const [result] = await chrome.scripting.executeScript({
     target: { tabId },
     func: () => {
-      const panel = document.getElementById('bcm3-panel');
-      if (!panel) return false;
-      const style = window.getComputedStyle(panel);
-      return panel.style.display !== 'none' && style.display !== 'none' && style.visibility !== 'hidden';
+      const state = window._bcmGetState ? window._bcmGetState() : null;
+      return state || {
+        enabled: false,
+        panelOpen: !!document.getElementById('bcm3-panel'),
+        hasPendingQueue: false
+      };
     }
   });
-  return Boolean(result && result.result);
+  return result && result.result ? result.result : null;
 }
 
 async function initToggleState() {
@@ -65,48 +76,62 @@ async function initToggleState() {
       setStatus('Open chatgpt.com or claude.ai to use the toggle.', 'error');
       return;
     }
+
     const { tab, site } = active;
-    // Update popup branding to match the active site
     const info = SITE_INFO[site];
     popupTitle.textContent = info.title;
     popupDesc.textContent = info.desc;
 
-    const isOn = await readCurrentPanelState(tab.id);
+    const storedEnabled = await readStoredEnabled(site);
+    let injectedState = null;
+    try {
+      injectedState = await getInjectedState(tab.id);
+    } catch (_) {}
+
+    const isOn = injectedState ? Boolean(injectedState.enabled) : storedEnabled;
     setToggleUI(isOn);
-    setStatus(isOn ? 'Panel is currently on.' : 'Panel is currently off.');
+
+    if (injectedState && injectedState.hasPendingQueue && !isOn) {
+      setStatus('Off. A queued task is still resuming in this tab.');
+    } else {
+      setStatus(isOn ? 'Panel is currently enabled.' : 'Panel is currently disabled.');
+    }
   } catch (err) {
-    setStatus('Could not read panel state.', 'error');
+    setStatus('Could not read extension state.', 'error');
   }
 }
 
 toggleBtn.addEventListener('click', async () => {
   toggleBtn.disabled = true;
-  setStatus('Checking current tab...');
+  setStatus('Updating current tab...');
   try {
     const active = await getActiveTab();
     if (!active) {
       setStatus('Open chatgpt.com or claude.ai and try again.', 'error');
       return;
     }
+
     const { tab } = active;
+    const current = await getInjectedState(tab.id);
+    const nextEnabled = !(current && current.enabled);
+
     const [result] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      func: () => {
-        const panel = document.getElementById('bcm3-panel');
-        if (panel) {
-          panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
-          return panel.style.display !== 'none';
-        } else {
-          window._bcmInit && window._bcmInit();
-          return true;
+      func: async (enabled) => {
+        if (window._bcmSetEnabled) {
+          await window._bcmSetEnabled(enabled);
+          return window._bcmGetState ? window._bcmGetState() : { enabled };
         }
-      }
+        return { enabled: false };
+      },
+      args: [nextEnabled]
     });
-    const isOn = Boolean(result && result.result);
-    setToggleUI(isOn);
-    setStatus(isOn ? 'Panel turned on.' : 'Panel turned off.', 'ok');
+
+    const state = result && result.result ? result.result : { enabled: nextEnabled };
+    setToggleUI(Boolean(state.enabled));
+    setStatus(state.enabled ? 'Extension turned on.' : 'Extension turned off.', 'ok');
   } catch (err) {
-    setStatus('Could not toggle panel. Retry.', 'error');
+    setStatus('Could not toggle extension. Retry.', 'error');
   } finally {
     toggleBtn.disabled = false;
   }
