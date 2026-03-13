@@ -5,7 +5,8 @@
   "description": "Organize ChatGPT sidebar chats with bulk move and delete actions.",
   "permissions": [
     "activeTab",
-    "scripting"
+    "scripting",
+    "storage"
   ],
   "host_permissions": [
     "https://chatgpt.com/*",

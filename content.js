@@ -142,6 +142,105 @@
     if (el) el.textContent = checked + ' of ' + all + ' chats selected';
   }
   var BCM3_QUEUE_KEY = 'bcm3-task-queue-v1';
+    var BCM3_ENABLED_KEY = 'bcm3-enabled:' + SITE.site;
+  var bcm3Bootstrapped = false;
+
+  window._bcmState = window._bcmState || {
+    enabled: false
+  };
+
+  function readEnabledPref() {
+    return new Promise(function(resolve) {
+      try {
+        if (!chrome || !chrome.storage || !chrome.storage.local) {
+          resolve(false);
+          return;
+        }
+        chrome.storage.local.get([BCM3_ENABLED_KEY], function(data) {
+          resolve(!!(data && data[BCM3_ENABLED_KEY]));
+        });
+      } catch (e) {
+        resolve(false);
+      }
+    });
+  }
+
+  function writeEnabledPref(value) {
+    return new Promise(function(resolve) {
+      try {
+        if (!chrome || !chrome.storage || !chrome.storage.local) {
+          resolve();
+          return;
+        }
+        var payload = {};
+        payload[BCM3_ENABLED_KEY] = !!value;
+        chrome.storage.local.set(payload, function() { resolve(); });
+      } catch (e) {
+        resolve();
+      }
+    });
+  }
+
+  function isPanelMounted() {
+    return !!document.getElementById('bcm3-panel');
+  }
+
+  function getPanelEl() {
+    return document.getElementById('bcm3-panel');
+  }
+
+  function cleanupPanel() {
+    var panel = getPanelEl();
+    if (panel) panel.remove();
+
+    lastClickedCheckbox = null;
+
+    var s = document.getElementById('bcm3-style');
+    if (s) s.remove();
+
+    if (window._bcmObserver) {
+      window._bcmObserver.disconnect();
+      window._bcmObserver = null;
+    }
+    if (window._bcmProjectObserver) {
+      window._bcmProjectObserver.disconnect();
+      window._bcmProjectObserver = null;
+    }
+
+    document.querySelectorAll('.bcm3-wrap').forEach(function(wrap) {
+      var link = wrap.querySelector('a');
+      if (link && wrap.parentElement) wrap.parentElement.insertBefore(link, wrap);
+      wrap.remove();
+    });
+  }
+
+  async function setEnabledState(enabled) {
+    enabled = !!enabled;
+    window._bcmState.enabled = enabled;
+    await writeEnabledPref(enabled);
+
+    if (enabled) {
+      if (!isPanelMounted()) init();
+    } else {
+      cleanupPanel();
+    }
+
+    return window._bcmGetState();
+  }
+
+  window._bcmSetEnabled = setEnabledState;
+  window._bcmGetState = function() {
+    return {
+      enabled: !!window._bcmState.enabled,
+      panelOpen: !!document.getElementById('bcm3-panel'),
+      hasPendingQueue: hasPendingQueue()
+    };
+  };
+  
+  function hasPendingQueue() {
+    var queue = readMoveQueue();
+    return !!(queue && queue.items && queue.items.length && queue.index < queue.items.length);
+  }
   var bcm3QueueRunning = false;
   function readMoveQueue() {
     try {
@@ -174,6 +273,7 @@
       };
     }).filter(function(x) { return !!x.convId; });
     var queue = {
+      site: SITE.site,
       action: action || 'move',
       projectId: projectId,
       projectName: projectName,
@@ -235,6 +335,128 @@
     active.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
   }
+  function hasVisibleDialog() {
+    var dlg = document.querySelector('[role="dialog"], [role="alertdialog"], [data-state="open"]');
+    return isVisibleElement(dlg);
+  }
+
+  function waitFor(conditionFn, timeoutMs, intervalMs) {
+    timeoutMs = timeoutMs || 8000;
+    intervalMs = intervalMs || 120;
+    return new Promise(function(resolve) {
+      var started = Date.now();
+      (function check() {
+        var result = false;
+        try { result = conditionFn(); } catch (e) {}
+        if (result) { resolve(result); return; }
+        if (Date.now() - started >= timeoutMs) { resolve(null); return; }
+        setTimeout(check, intervalMs);
+      })();
+    });
+  }
+
+  function waitForDomIdle(idleMs, timeoutMs) {
+    idleMs = idleMs || 500;
+    timeoutMs = timeoutMs || 7000;
+
+    return new Promise(function(resolve) {
+      var done = false;
+      var idleTimer = null;
+      var timeoutTimer = null;
+      var observer = new MutationObserver(function() {
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(finish, idleMs);
+      });
+
+      function finish() {
+        if (done) return;
+        done = true;
+        clearTimeout(idleTimer);
+        clearTimeout(timeoutTimer);
+        observer.disconnect();
+        resolve(true);
+      }
+
+      observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+      idleTimer = setTimeout(finish, idleMs);
+      timeoutTimer = setTimeout(finish, timeoutMs);
+    });
+  }
+
+  async function waitForMenusClosed() {
+    await waitFor(function() {
+      return getVisibleMenuItems().length === 0 && !hasVisibleDialog();
+    }, 5000, 100);
+  }
+
+  async function waitForChatLink(convId, timeoutMs) {
+    return await waitFor(function() {
+      return findChatLinkByConvId(convId);
+    }, timeoutMs || 12000, 150);
+  }
+
+  async function waitForMenuToOpen() {
+    return await waitFor(function() {
+      return getVisibleMenuItems().length > 0 || hasVisibleDialog();
+    }, 3000, 100);
+  }
+
+  async function openMenuForChat(link) {
+    if (!link) return null;
+
+    link.scrollIntoView({ behavior: 'instant', block: 'center' });
+    await delay(150);
+    realHover(link);
+    await delay(150);
+
+    var btn = findMenuButtonForChatLink(link);
+    if (!btn) return null;
+
+    realHover(btn);
+    await delay(80);
+    realClick(btn);
+
+    var opened = await waitForMenuToOpen();
+    return opened ? btn : null;
+  }
+
+  async function findVisibleMenuItemByText(candidates, timeoutMs) {
+    candidates = Array.isArray(candidates) ? candidates : [candidates];
+    candidates = candidates.map(function(s) { return normalizeText(s); });
+
+    return await waitFor(function() {
+      var mitems = getVisibleMenuItems();
+      return mitems.find(function(el) {
+        var t = normalizeText(el.textContent);
+        return candidates.some(function(c) { return t === c || t.indexOf(c) === 0; });
+      }) || null;
+    }, timeoutMs || 4000, 120);
+  }
+
+  async function findVisibleProjectOption(projectName, timeoutMs) {
+    var target = normalizeText(projectName);
+    return await waitFor(function() {
+      if (SITE.site === 'claude') {
+        var opts = Array.from(document.querySelectorAll('[role="option"]')).filter(isVisibleElement);
+        return opts.find(function(el) { return normalizeText(el.textContent) === target; }) || null;
+      }
+      var mitems = getVisibleMenuItems();
+      return mitems.find(function(el) { return normalizeText(el.textContent) === target; }) || null;
+    }, timeoutMs || 5000, 120);
+  }
+
+  async function waitForMoveUiToSettle(convId) {
+    await waitForMenusClosed();
+    await waitForDomIdle(700, 7000);
+
+    // Best-effort: if the row disappears from the current list, great.
+    // If it remains because the site is showing an all-chats view, don't fail on that alone.
+    await waitFor(function() {
+      return !findChatLinkByConvId(convId) || true;
+    }, 1200, 120);
+
+    return true;
+  }
   function findDeleteConfirmButton() {
     // Try data-testid first
     var exactConfirm = document.querySelector('button[data-testid="delete-conversation-confirm-button"]');
@@ -291,6 +513,10 @@
   async function processMoveQueue() {
     if (bcm3QueueRunning) return;
     var queue = readMoveQueue();
+    if (queue.site && queue.site !== SITE.site) {
+      clearMoveQueue();
+      return;
+    }
     if (!queue || !queue.items || !queue.items.length) return;
     if (queue.index >= queue.items.length) { clearMoveQueue(); return; }
     bcm3QueueRunning = true;
@@ -350,87 +576,85 @@
       }
       setStatus('[' + (queue.index + 1) + '/' + total + '] ' + actionWord + ' "' + title + '"...');
       if (action === 'move') {
-        realClick(btn);
-        await delay(700);
-        // Find the move/add-to-project menu item (text differs per site)
-        var moveItem = null;
-        for (var w = 0; w < 25; w++) {
-          var mitems = getVisibleMenuItems();
-          moveItem = mitems.find(function(el) {
-            var t = normalizeText(el.textContent);
-            return SITE.moveMenuItemTexts.some(function(s) { return t.indexOf(s) === 0; });
-          });
-          if (moveItem) break;
-          await delay(150);
-        }
-        if (!moveItem) {
-          setStatus('[' + (queue.index + 1) + '] "Move to project" option not found');
+        var movedThisItem = false;
+
+        for (var attempt = 1; attempt <= 3 && !movedThisItem; attempt++) {
           dismissOpenMenus();
-          await delay(300);
+          await delay(150);
+
+          link = await waitForChatLink(item.convId, 6000);
+          if (!link) break;
+
+          var openedBtn = await openMenuForChat(link);
+          if (!openedBtn) {
+            setStatus('[' + (queue.index + 1) + '/' + total + '] Could not open menu for "' + title + '" (attempt ' + attempt + '/3)');
+            await waitForDomIdle(300, 1500);
+            continue;
+          }
+
+          var moveItem = await findVisibleMenuItemByText(SITE.moveMenuItemTexts, 4000);
+          if (!moveItem) {
+            setStatus('[' + (queue.index + 1) + '/' + total + '] "Move to project" option not found (attempt ' + attempt + '/3)');
+            dismissOpenMenus();
+            await waitForDomIdle(300, 1500);
+            continue;
+          }
+
+          realHover(moveItem);
+          await delay(80);
+          realClick(moveItem);
+
+          var projItem = await findVisibleProjectOption(queue.projectName, 5000);
+          if (!projItem) {
+            setStatus('[' + (queue.index + 1) + '/' + total + '] Project "' + queue.projectName + '" not found (attempt ' + attempt + '/3)');
+            dismissOpenMenus();
+            await waitForDomIdle(300, 1500);
+            continue;
+          }
+
+          realHover(projItem);
+          await delay(80);
+          realClick(projItem);
+
+          await waitForMoveUiToSettle(item.convId);
+
+          movedThisItem = true;
+        }
+
+        if (!movedThisItem) {
+          setStatus('[' + (queue.index + 1) + '/' + total + '] Move failed after retries: "' + title + '" (skip)');
+          dismissOpenMenus();
+          await waitForDomIdle(400, 2000);
           queue.index++;
           writeMoveQueue(queue);
-          bcm3QueueRunning = false;
-          await processMoveQueue();
+
+          if (queue.index < total) {
+            bcm3QueueRunning = false;
+            await processMoveQueue();
+          } else {
+            setStatus('Done with skips. Moved ' + queue.moved + '/' + total + ' to "' + queue.projectName + '"');
+            clearMoveQueue();
+          }
           return;
         }
-        realHover(moveItem);
-        realClick(moveItem);
-        await delay(600);
-        var projItem = null;
-        var pName = normalizeText(queue.projectName || '');
-        if (SITE.site === 'claude') {
-          // Claude.ai opens a modal with [role="option"] items instead of a submenu
-          for (var wm = 0; wm < 20; wm++) {
-            var opts = Array.from(document.querySelectorAll('[role="option"]')).filter(isVisibleElement);
-            projItem = opts.find(function(el) { return normalizeText(el.textContent) === pName; });
-            if (projItem) break;
-            await delay(150);
-          }
-          if (!projItem) {
-            setStatus('[' + (queue.index + 1) + '] Project "' + queue.projectName + '" not in modal');
-            dismissOpenMenus();
-            await delay(300);
-            queue.index++;
-            writeMoveQueue(queue);
-            bcm3QueueRunning = false;
-            await processMoveQueue();
-            return;
-          }
-          realClick(projItem);
-        } else {
-          // ChatGPT: project appears as a submenu item
-          for (var w2 = 0; w2 < 18; w2++) {
-            var pitems = getVisibleMenuItems();
-            projItem = pitems.find(function(el) { return normalizeText(el.textContent) === pName; });
-            if (projItem) break;
-            await delay(150);
-          }
-          if (!projItem) {
-            setStatus('[' + (queue.index + 1) + '] Project "' + queue.projectName + '" not in submenu');
-            dismissOpenMenus();
-            await delay(300);
-            queue.index++;
-            writeMoveQueue(queue);
-            bcm3QueueRunning = false;
-            await processMoveQueue();
-            return;
-          }
-          realClick(projItem);
-        }
+
         queue.moved++;
         queue.index++;
         writeMoveQueue(queue);
+
         var liveCb = document.querySelector('.bcm3-cb[data-conv-id="' + item.convId + '"]');
         if (liveCb) liveCb.checked = false;
         updateCount();
-        await delay(950);
+
+        await waitForDomIdle(500, 2500);
+
         if (queue.index < total) {
           bcm3QueueRunning = false;
           await processMoveQueue();
         } else {
           setStatus('Done! Moved ' + queue.moved + '/' + total + ' to "' + queue.projectName + '"');
           clearMoveQueue();
-          setTimeout(function() { injectCheckboxes(); updateCount(); }, 1000);
+          setTimeout(function() { injectCheckboxes(); updateCount(); }, 700);
         }
       } else if (action === 'delete') {
         realClick(btn);
@@ -719,22 +943,12 @@
     });
     document.getElementById('bcm3-refresh-btn').addEventListener('click', function() {
       lastProjectCount = 0;
-      loadProjects(true); // forceModal=true: scrape from picker if DOM scan is empty
+      loadProjects(true); // forceModal=true: scrape from picker if DOM/API are empty
     });
     document.getElementById('bcm3-move-btn').addEventListener('click', moveSelected);
     document.getElementById('bcm3-delete-btn').addEventListener('click', deleteSelected);
     document.getElementById('bcm3-close-btn').addEventListener('click', function() {
-      panel.remove();
-      lastClickedCheckbox = null;
-      var s = document.getElementById('bcm3-style');
-      if (s) s.remove();
-      if (window._bcmObserver) { window._bcmObserver.disconnect(); window._bcmObserver = null; }
-      if (window._bcmProjectObserver) { window._bcmProjectObserver.disconnect(); window._bcmProjectObserver = null; }
-      document.querySelectorAll('.bcm3-wrap').forEach(function(wrap) {
-        var link = wrap.querySelector('a');
-        if (link) wrap.parentElement.insertBefore(link, wrap);
-        wrap.remove();
-      });
+      setEnabledState(false);
     });
     var injectTimer = null;
     window._bcmObserver = new MutationObserver(function() {
@@ -759,20 +973,43 @@
     window._bcmProjectObserver.observe(document.body, { childList: true, subtree: true });
     // On Claude.ai pass forceModal=true so the modal fallback fires
     // automatically on first open if the DOM scan and API both come up empty.
-    loadProjects(SITE.site === 'claude');
+    loadProjects(false);
     // Resume any pending queue on page load (the core of the reload-per-delete flow)
     setTimeout(processMoveQueue, 2000);
   }
   window._bcmInit = init;
-  setTimeout(init, 2000);
-  // Re-run on SPA navigation
+
+  (async function bootstrapBcm() {
+    if (bcm3Bootstrapped) return;
+    bcm3Bootstrapped = true;
+
+    var enabled = await readEnabledPref();
+    window._bcmState.enabled = !!enabled;
+
+    if (enabled) {
+      setTimeout(function() {
+        if (!isPanelMounted()) init();
+      }, 1200);
+    }
+
+    if (hasPendingQueue()) {
+      setTimeout(processMoveQueue, 1600);
+    }
+  })();
+
   var lastUrl = location.href;
   new MutationObserver(function() {
     if (location.href !== lastUrl) {
       lastUrl = location.href;
+
       setTimeout(function() {
-        if (!document.getElementById('bcm3-panel')) init();
-      }, 1500);
+        if (window._bcmState.enabled && !isPanelMounted()) {
+          init();
+        }
+        if (hasPendingQueue()) {
+          processMoveQueue();
+        }
+      }, 1200);
     }
   }).observe(document.body, { childList: true, subtree: true });
 })();
