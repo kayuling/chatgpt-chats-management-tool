@@ -512,11 +512,11 @@
   }
   async function processMoveQueue() {
     if (bcm3QueueRunning) return;
+    var queue = readMoveQueue();
     if (queue.site && queue.site !== SITE.site) {
       clearMoveQueue();
       return;
     }
-    var queue = readMoveQueue();
     if (!queue || !queue.items || !queue.items.length) return;
     if (queue.index >= queue.items.length) { clearMoveQueue(); return; }
     bcm3QueueRunning = true;
